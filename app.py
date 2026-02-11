@@ -1,91 +1,205 @@
 import streamlit as st
-import requests
-import ccxt
-import pandas as pd
-import numpy as np
-import ta
-import matplotlib.pyplot as plt
-from scipy.signal import argrelextrema
 
-BASE_URL = "https://api.binance.us"
-exchange = ccxt.binanceus()
+# =====================================
+# PAGE CONFIG
+# =====================================
 
-st.set_page_config(layout="wide")
-st.title("📊 Binance.US Professional Momentum Scanner")
+st.set_page_config(
+    page_title="Binance Futures Scalp Engine",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# SIDEBAR
-st.sidebar.header("⚙️ Ayarlar")
+st.title("🚀 Binance Futures Scalp & Swing Engine")
 
-min_volume = st.sidebar.number_input("Minimum 24h Hacim", value=1000000)
-top_n = st.sidebar.slider("Kaç Coin Analiz Edilsin?", 5, 20, 10)
+# =====================================
+# SESSION STATE INIT
+# =====================================
 
-start = st.sidebar.button("Taramayı Başlat")
+if "selected_coins" not in st.session_state:
+    st.session_state.selected_coins = []
 
-# OHLCV
-def fetch_ohlcv(symbol, timeframe, limit=500):
-    s = symbol.replace("USDT","/USDT")
-    data = exchange.fetch_ohlcv(s, timeframe=timeframe, limit=limit)
-    df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume'])
-    return df
+# =====================================
+# SIDEBAR – TRADING CONFIGURATION
+# =====================================
 
-def trade_plan_15m(df):
-    df['ema20'] = ta.trend.EMAIndicator(df['close'],20).ema_indicator()
-    df['ema50'] = ta.trend.EMAIndicator(df['close'],50).ema_indicator()
-    df['rsi'] = ta.momentum.RSIIndicator(df['close'],14).rsi()
-    df['atr'] = ta.volatility.AverageTrueRange(df['high'],df['low'],df['close'],14).average_true_range()
+st.sidebar.header("📊 Trade Configuration")
 
-    price = df['close'].iloc[-1]
-    ema20 = df['ema20'].iloc[-1]
-    ema50 = df['ema50'].iloc[-1]
-    rsi = df['rsi'].iloc[-1]
-    atr = df['atr'].iloc[-1]
+scalp_mode = st.sidebar.radio(
+    "Scalp Mode",
+    [
+        "5 Minutes (High Frequency)",
+        "15 Minutes (Balanced)",
+        "1 Hour (Micro Swing)"
+    ]
+)
 
-    if ema20 > ema50 and rsi > 55:
-        direction = "LONG"
-        sl = price - 1.5*atr
-        tp = price + 2*atr
+if "5" in scalp_mode:
+    timeframe = "5m"
+elif "15" in scalp_mode:
+    timeframe = "15m"
+else:
+    timeframe = "1h"
+
+# =====================================
+# INVESTMENT SETUP
+# =====================================
+
+st.sidebar.header("💰 Investment Setup")
+
+colA, colB = st.sidebar.columns(2)
+
+with colA:
+    investment_amount = st.number_input(
+        "Investment Amount",
+        min_value=10.0,
+        value=500.0,
+        step=10.0
+    )
+
+with colB:
+    stablecoin_type = st.selectbox(
+        "Base",
+        ["USDT", "USDC"]
+    )
+
+# =====================================
+# RISK PROFILE
+# =====================================
+
+st.sidebar.header("⚠ Risk Profile")
+
+risk_level = st.sidebar.select_slider(
+    "Risk Level",
+    options=["Low", "Medium", "High"],
+    value="Medium"
+)
+
+if risk_level == "Low":
+    risk_percent = 0.5
+    leverage_default = 3
+elif risk_level == "Medium":
+    risk_percent = 1.0
+    leverage_default = 5
+else:
+    risk_percent = 2.0
+    leverage_default = 8
+
+leverage = st.sidebar.slider(
+    "Leverage",
+    min_value=1,
+    max_value=20,
+    value=leverage_default
+)
+
+auto_leverage = st.sidebar.checkbox("Auto Leverage (ATR Based)")
+
+# =====================================
+# SCAN SETTINGS
+# =====================================
+
+st.sidebar.header("🔎 Scan Settings")
+
+coin_count = st.sidebar.slider(
+    "Number of Coins to Select",
+    min_value=1,
+    max_value=50,
+    value=20
+)
+
+min_volume = st.sidebar.number_input(
+    f"Minimum 24h Volume ({stablecoin_type})",
+    min_value=10000.0,
+    value=500000.0,
+    step=50000.0
+)
+
+volume_spike_multiplier = st.sidebar.slider(
+    "Volume Spike Multiplier",
+    min_value=1.0,
+    max_value=3.0,
+    value=1.8
+)
+
+direction_mode = st.sidebar.multiselect(
+    "Allowed Directions",
+    ["Long", "Short"],
+    default=["Long", "Short"]
+)
+
+# =====================================
+# MAIN DASHBOARD
+# =====================================
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📈 Scan Results")
+
+    if st.session_state.selected_coins:
+        st.dataframe(st.session_state.selected_coins)
     else:
-        direction = "SHORT"
-        sl = price + 1.5*atr
-        tp = price - 2*atr
+        st.info(f"Scanning {timeframe} timeframe futures markets...")
 
-    return direction, price, sl, tp
+with col2:
+    st.subheader("📌 Trade Setup Preview")
 
-if start:
+    st.metric("Investment", f"{investment_amount} {stablecoin_type}")
+    st.metric("Risk %", f"{risk_percent}%")
+    st.metric("Leverage", f"{leverage}x")
+    st.metric("Timeframe", timeframe)
 
-    st.subheader("🔎 Tarama Sonuçları")
+# =====================================
+# ACTION BUTTONS
+# =====================================
 
-    resp = requests.get(BASE_URL + "/api/v3/ticker/24hr")
-    data = resp.json()
-    df = pd.DataFrame(data)
+st.divider()
 
-    df = df[df['symbol'].str.endswith("USDT")]
-    df['quoteVolume'] = pd.to_numeric(df['quoteVolume'], errors='coerce')
-    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
-    df = df[df['quoteVolume'] > min_volume]
+colA, colB, colC = st.columns(3)
 
-    df = df.sort_values("priceChangePercent", ascending=False).head(top_n)
+with colA:
+    scan_button = st.button("🔎 Run Scan")
 
-    st.dataframe(df[['symbol','priceChangePercent','quoteVolume']])
+with colB:
+    paper_trade_button = st.button("📝 Paper Trade")
 
-    selected = st.selectbox("Grafik için Coin Seç", df['symbol'])
+with colC:
+    live_trade_button = st.button("⚡ Execute Live Trade")
 
-    df_daily = fetch_ohlcv(selected,'1d',limit=365)
-    df_15m = fetch_ohlcv(selected,'15m',limit=500)
+# =====================================
+# SCAN LOGIC (MOCK FOR NOW)
+# =====================================
 
-    direction, entry, sl, tp = trade_plan_15m(df_15m)
+if scan_button:
 
-    st.markdown("### 📌 15M Trade Planı")
-    st.write("Yön:", direction)
-    st.write("Giriş:", round(entry,6))
-    st.write("Stop:", round(sl,6))
-    st.write("Take Profit:", round(tp,6))
+    st.info("Scanning Binance Futures markets...")
 
-    # Grafik
-    fig, ax = plt.subplots(figsize=(10,4))
-    ax.plot(df_daily['close'])
-    ax.axhline(entry, linestyle="--")
-    ax.axhline(sl)
-    ax.axhline(tp)
+    # Geçici mock liste (gerçek API entegrasyonu sonraki aşama)
+    mock_market = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
+        "AVAXUSDT", "DOGEUSDT", "BNBUSDT", "ADAUSDT",
+        "LINKUSDT", "LTCUSDT", "APTUSDT", "ARBUSDT",
+        "OPUSDT", "MATICUSDT", "INJUSDT", "NEARUSDT",
+        "FILUSDT", "ATOMUSDT", "SUIUSDT", "TIAUSDT",
+        "TRXUSDT", "ETCUSDT", "AAVEUSDT", "UNIUSDT",
+        "ICPUSDT", "HBARUSDT", "FTMUSDT", "EGLDUSDT"
+    ]
 
-    st.pyplot(fig)
+    selected = mock_market[:coin_count]
+
+    st.session_state.selected_coins = selected
+
+    st.success(f"{len(selected)} coins selected.")
+
+# =====================================
+# STATUS PANEL
+# =====================================
+
+st.divider()
+
+st.subheader("📡 System Status")
+
+if st.session_state.selected_coins:
+    st.success("Scan completed successfully.")
+else:
+    st.success("System Ready")
