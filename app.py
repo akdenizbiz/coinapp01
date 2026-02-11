@@ -1,5 +1,3 @@
-%%writefile app.py
-
 import streamlit as st
 import requests
 import ccxt
@@ -89,4 +87,5 @@ if start:
     ax.axhline(entry, linestyle="--")
     ax.axhline(sl)
     ax.axhline(tp)
+
     st.pyplot(fig)
