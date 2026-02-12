@@ -1,104 +1,123 @@
 import streamlit as st
 import ccxt
 import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objects as go
 from datetime import datetime
 
-# --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Gemini Futures Analyzer", layout="wide")
-st.title("📊 Crypto Futures Technical Analyzer")
-st.sidebar.header("Ayarlar")
+# -----------------------------------------------------------------------------
+# 1. SAYFA VE GENEL AYARLAR
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Binance Futures Grafiği",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- PARAMETRELER (Side Bar) ---
-symbol = st.sidebar.selectbox("Parite Seçin", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"], index=0)
-timeframe = st.sidebar.selectbox("Zaman Dilimi", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
-period = st.sidebar.slider("Mum Sayısı", 50, 500, 100)
+st.title("📈 Binance Futures - Fiyat Takip Sistemi")
+st.markdown("---")
 
-# --- BINANCE BAĞLANTISI ---
-@st.cache_data(ttl=30)  # 30 saniyede bir veriyi yeniler
-def fetch_data(symbol, timeframe, limit):
+# -----------------------------------------------------------------------------
+# 2. YAN PANEL (SIDEBAR) - KULLANICI GİRİŞLERİ
+# -----------------------------------------------------------------------------
+st.sidebar.header("⚙️ Grafik Ayarları")
+
+# Coin Seçimi (Listeyi senin isteğine göre sabitledim)
+coin_list = ["BTC", "ETH", "SOL", "ADA", "XRP", "BNB"]
+selected_coin = st.sidebar.selectbox("Coin Seçiniz:", coin_list, index=0)
+
+# Zaman Dilimi Seçimi (Kullanıcı dostu isimler -> API kodları)
+timeframe_map = {
+    "5 Dakika": "5m",
+    "15 Dakika": "15m",
+    "1 Saat": "1h",
+    "4 Saat": "4h",
+    "1 Gün": "1d"
+}
+selected_tf_label = st.sidebar.selectbox("Zaman Dilimi:", list(timeframe_map.keys()), index=2)
+selected_tf_code = timeframe_map[selected_tf_label]
+
+# Mum Sayısı (Varsayılan 100, istersen artırabilirsin)
+limit = st.sidebar.slider("Gösterilecek Mum Sayısı:", 50, 500, 100)
+
+# Çizim Butonu
+draw_button = st.sidebar.button("Grafiği Çiz", type="primary")
+
+# -----------------------------------------------------------------------------
+# 3. VERİ ÇEKME FONKSİYONU (Binance Futures)
+# -----------------------------------------------------------------------------
+def fetch_futures_data(symbol, timeframe, limit):
+    """
+    Binance Vadeli İşlemlerden (Futures) veri çeker.
+    API Key gerektirmez (Public Data).
+    """
     try:
-        exchange = ccxt.binance({'options': {'defaultType': 'future'}})
-        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        # Binance Futures bağlantısı
+        exchange = ccxt.binance({
+            'options': {
+                'defaultType': 'future',  # Spot değil Vadeli veri
+            }
+        })
+        
+        # Sembolü API formatına çevir (Örn: BTC -> BTC/USDT)
+        pair = f"{symbol}/USDT"
+        
+        # Veriyi çek
+        ohlcv = exchange.fetch_ohlcv(pair, timeframe, limit=limit)
+        
+        # Veriyi DataFrame'e çevir
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        
+        return df, pair
     except Exception as e:
-        st.error(f"Veri çekme hatası: {e}")
-        return None
+        return None, str(e)
 
-# --- ANALİZ MODÜLÜ ---
-def add_indicators(df):
-    # RSI
-    df['RSI'] = ta.rsi(df['close'], length=14)
-    # Bollinger Bands
-    bbands = ta.bbands(df['close'], length=20, std=2)
-    df['BBL'] = bbands['BBL_20_2.0']
-    df['BBM'] = bbands['BBM_20_2.0']
-    df['BBU'] = bbands['BBU_20_2.0']
-    # EMA
-    df['EMA_20'] = ta.ema(df['close'], length=20)
-    df['EMA_50'] = ta.ema(df['close'], length=50)
-    return df
-
-# --- ANA DÖNGÜ ---
-df = fetch_data(symbol, timeframe, period)
-
-if df is not None:
-    df = add_indicators(df)
-    last_row = df.iloc[-1]
-
-    # --- METRİKLER (Üst Panel) ---
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Son Fiyat", f"${last_row['close']:.2f}")
-    col2.metric("RSI (14)", f"{last_row['RSI']:.2f}")
-    col3.metric("Üst Bant", f"${last_row['BBU']:.2f}")
-    col4.metric("Alt Bant", f"${last_row['BBL']:.2f}")
-
-    # --- GRAFİK TASARIMI (Plotly) ---
-    fig = go.Figure()
-
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'], open=df['open'], high=df['high'],
-        low=df['low'], close=df['close'], name='Fiyat'
-    ))
-
-    # Bollinger Bantları (Görselleştirme)
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BBU'], line=dict(color='rgba(173, 216, 230, 0.5)'), name='Üst Bant'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BBL'], line=dict(color='rgba(173, 216, 230, 0.5)'), fill='tonexty', name='Alt Bant'))
-    
-    # EMA
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA_20'], line=dict(color='orange', width=1), name='EMA 20'))
-
-    fig.update_layout(title=f"{symbol} Teknik Görünüm", xaxis_rangeslider_visible=False, height=600)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- SİNYAL DURUMU ---
-    st.subheader("🤖 Strateji Durum Raporu")
-    
-    # Analiz Mantığı
-    status = "Nötr"
-    color = "white"
-    
-    if last_row['RSI'] < 30 and last_row['close'] <= last_row['BBL']:
-        status = "GÜÇLÜ AL (Aşırı Satım + Bollinger Alt Bant)"
-        color = "green"
-    elif last_row['RSI'] > 70 and last_row['close'] >= last_row['BBU']:
-        status = "GÜÇLÜ SAT (Aşırı Alım + Bollinger Üst Bant)"
-        color = "red"
-    elif last_row['close'] > last_row['EMA_20']:
-        status = "Yükseliş Trendi (EMA Üstü)"
-        color = "blue"
-    else:
-        status = "Beklemede - Net Sinyal Yok"
-
-    st.markdown(f"### Durum: :{color}[{status}]")
-
-    # Veri Tablosu
-    with st.expander("Ham Verileri Gör"):
-        st.dataframe(df.tail(20))
+# -----------------------------------------------------------------------------
+# 4. ANA İŞLEYİŞ (BUTONA BASILINCA)
+# -----------------------------------------------------------------------------
+if draw_button:
+    with st.spinner(f'{selected_coin} verileri çekiliyor...'):
+        # Veriyi getir
+        df, result = fetch_futures_data(selected_coin, selected_tf_code, limit)
+        
+        if df is not None:
+            # --- BAŞARILI İSE GRAFİĞİ ÇİZ ---
+            
+            # Son fiyat bilgisi
+            last_price = df['close'].iloc[-1]
+            st.metric(label=f"{result} Son Fiyat", value=f"${last_price:.2f}")
+            
+            # Plotly ile Mum Grafiği (Candlestick)
+            fig = go.Figure(data=[go.Candlestick(
+                x=df['timestamp'],
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name=result
+            )])
+            
+            # Grafik Görsel Ayarları
+            fig.update_layout(
+                title=f'{result} - {selected_tf_label} Grafiği',
+                yaxis_title='Fiyat (USDT)',
+                xaxis_title='Zaman',
+                template='plotly_dark', # Koyu tema
+                height=600,
+                xaxis_rangeslider_visible=False # Alt kısımdaki kaydırma çubuğunu gizle
+            )
+            
+            # Ekrana bas
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # İsteğe bağlı: Tablo olarak veriyi göster
+            with st.expander("Ham Verileri Görüntüle"):
+                st.dataframe(df.sort_values(by='timestamp', ascending=False))
+                
+        else:
+            # --- HATA VARSA ---
+            st.error(f"Veri çekilemedi! Hata Detayı: {result}")
 
 else:
-    st.warning("Veri yüklenemiyor, lütfen ayarları kontrol edin.")
+    # Henüz butona basılmadıysa başlangıç ekranı
+    st.info("👈 Lütfen sol panelden Coin ve Süre seçip 'Grafiği Çiz' butonuna basın.")
