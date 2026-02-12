@@ -1,5 +1,5 @@
 import streamlit as st
-import ccxt
+import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
@@ -8,12 +8,13 @@ from datetime import datetime
 # 1. SAYFA VE GENEL AYARLAR
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Binance Futures Grafiği",
+    page_title="Crypto Fiyat Takip",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📈 Binance Futures - Fiyat Takip Sistemi")
+st.title("📈 Kripto Fiyat Takip Sistemi (Global)")
+st.info("ℹ️ Not: Streamlit sunucuları ABD'de olduğu için Binance verisi engellenmektedir. Veriler kesintisiz erişim için Yahoo Finance üzerinden çekilmektedir.")
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
@@ -21,73 +22,83 @@ st.markdown("---")
 # -----------------------------------------------------------------------------
 st.sidebar.header("⚙️ Grafik Ayarları")
 
-# Coin Seçimi (Listeyi senin isteğine göre sabitledim)
+# Coin Seçimi
 coin_list = ["BTC", "ETH", "SOL", "ADA", "XRP", "BNB"]
 selected_coin = st.sidebar.selectbox("Coin Seçiniz:", coin_list, index=0)
 
-# Zaman Dilimi Seçimi (Kullanıcı dostu isimler -> API kodları)
+# Zaman Dilimi Seçimi (Yahoo Formatı)
 timeframe_map = {
     "5 Dakika": "5m",
     "15 Dakika": "15m",
     "1 Saat": "1h",
-    "4 Saat": "4h",
     "1 Gün": "1d"
 }
 selected_tf_label = st.sidebar.selectbox("Zaman Dilimi:", list(timeframe_map.keys()), index=2)
 selected_tf_code = timeframe_map[selected_tf_label]
 
-# Mum Sayısı (Varsayılan 100, istersen artırabilirsin)
-limit = st.sidebar.slider("Gösterilecek Mum Sayısı:", 50, 500, 100)
+# Mum Sayısı (Periyot belirleme)
+# Yahoo finance için periyot mantığı biraz farklıdır (Son 1 gün, Son 5 gün vb.)
+period_map = {
+    "5m": "1d",   # 5 dk'lık veri için son 1 günü getir
+    "15m": "5d",  # 15 dk'lık veri için son 5 günü getir
+    "1h": "1mo",  # 1 saatlik veri için son 1 ayı getir
+    "1d": "1y"    # Günlük veri için son 1 yılı getir
+}
+period = period_map[selected_tf_code]
 
 # Çizim Butonu
 draw_button = st.sidebar.button("Grafiği Çiz", type="primary")
 
 # -----------------------------------------------------------------------------
-# 3. VERİ ÇEKME FONKSİYONU (Binance Futures)
+# 3. VERİ ÇEKME FONKSİYONU (Yahoo Finance)
 # -----------------------------------------------------------------------------
-def fetch_futures_data(symbol, timeframe, limit):
+def fetch_crypto_data(symbol, interval, period):
     """
-    Binance Vadeli İşlemlerden (Futures) veri çeker.
-    API Key gerektirmez (Public Data).
+    Yahoo Finance üzerinden veri çeker (VPN/Proxy gerekmez).
     """
     try:
-        # Binance Futures bağlantısı
-        exchange = ccxt.binance({
-            'options': {
-                'defaultType': 'future',  # Spot değil Vadeli veri
-            }
-        })
-        
-        # Sembolü API formatına çevir (Örn: BTC -> BTC/USDT)
-        pair = f"{symbol}/USDT"
+        # Sembolü Yahoo formatına çevir (Örn: BTC -> BTC-USD)
+        pair = f"{symbol}-USD"
         
         # Veriyi çek
-        ohlcv = exchange.fetch_ohlcv(pair, timeframe, limit=limit)
+        ticker = yf.Ticker(pair)
+        df = ticker.history(period=period, interval=interval)
         
-        # Veriyi DataFrame'e çevir
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        if df.empty:
+            return None, "Veri boş döndü."
+            
+        # DataFrame düzenleme
+        df = df.reset_index()
+        
+        # Sütun isimlerini standartlaştır (Date -> timestamp)
+        # Yahoo bazen 'Date', bazen 'Datetime' döndürür
+        if 'Datetime' in df.columns:
+            df = df.rename(columns={'Datetime': 'timestamp', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+        elif 'Date' in df.columns:
+            df = df.rename(columns={'Date': 'timestamp', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
+            
+        # Zaman damgasını timezone'dan arındır (Plotly hatasını önlemek için)
+        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
         
         return df, pair
     except Exception as e:
         return None, str(e)
 
 # -----------------------------------------------------------------------------
-# 4. ANA İŞLEYİŞ (BUTONA BASILINCA)
+# 4. ANA İŞLEYİŞ
 # -----------------------------------------------------------------------------
 if draw_button:
     with st.spinner(f'{selected_coin} verileri çekiliyor...'):
         # Veriyi getir
-        df, result = fetch_futures_data(selected_coin, selected_tf_code, limit)
+        df, result = fetch_crypto_data(selected_coin, selected_tf_code, period)
         
         if df is not None:
             # --- BAŞARILI İSE GRAFİĞİ ÇİZ ---
             
-            # Son fiyat bilgisi
             last_price = df['close'].iloc[-1]
             st.metric(label=f"{result} Son Fiyat", value=f"${last_price:.2f}")
             
-            # Plotly ile Mum Grafiği (Candlestick)
+            # Plotly Mum Grafiği
             fig = go.Figure(data=[go.Candlestick(
                 x=df['timestamp'],
                 open=df['open'],
@@ -97,27 +108,22 @@ if draw_button:
                 name=result
             )])
             
-            # Grafik Görsel Ayarları
             fig.update_layout(
                 title=f'{result} - {selected_tf_label} Grafiği',
-                yaxis_title='Fiyat (USDT)',
+                yaxis_title='Fiyat (USD)',
                 xaxis_title='Zaman',
-                template='plotly_dark', # Koyu tema
+                template='plotly_dark',
                 height=600,
-                xaxis_rangeslider_visible=False # Alt kısımdaki kaydırma çubuğunu gizle
+                xaxis_rangeslider_visible=False
             )
             
-            # Ekrana bas
             st.plotly_chart(fig, use_container_width=True)
             
-            # İsteğe bağlı: Tablo olarak veriyi göster
             with st.expander("Ham Verileri Görüntüle"):
                 st.dataframe(df.sort_values(by='timestamp', ascending=False))
                 
         else:
-            # --- HATA VARSA ---
-            st.error(f"Veri çekilemedi! Hata Detayı: {result}")
+            st.error(f"Veri çekilemedi! Hata: {result}")
 
 else:
-    # Henüz butona basılmadıysa başlangıç ekranı
-    st.info("👈 Lütfen sol panelden Coin ve Süre seçip 'Grafiği Çiz' butonuna basın.")
+    st.info("👈 Lütfen sol panelden seçim yapıp 'Grafiği Çiz' butonuna basın.")
