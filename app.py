@@ -1,205 +1,104 @@
 import streamlit as st
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import plotly.graph_objects as go
+from datetime import datetime
 
-# =====================================
-# PAGE CONFIG
-# =====================================
+# --- SAYFA AYARLARI ---
+st.set_page_config(page_title="Gemini Futures Analyzer", layout="wide")
+st.title("📊 Crypto Futures Technical Analyzer")
+st.sidebar.header("Ayarlar")
 
-st.set_page_config(
-    page_title="Binance Futures Scalp Engine",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- PARAMETRELER (Side Bar) ---
+symbol = st.sidebar.selectbox("Parite Seçin", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"], index=0)
+timeframe = st.sidebar.selectbox("Zaman Dilimi", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
+period = st.sidebar.slider("Mum Sayısı", 50, 500, 100)
 
-st.title("🚀 Binance Futures Scalp & Swing Engine")
+# --- BINANCE BAĞLANTISI ---
+@st.cache_data(ttl=30)  # 30 saniyede bir veriyi yeniler
+def fetch_data(symbol, timeframe, limit):
+    try:
+        exchange = ccxt.binance({'options': {'defaultType': 'future'}})
+        bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        st.error(f"Veri çekme hatası: {e}")
+        return None
 
-# =====================================
-# SESSION STATE INIT
-# =====================================
+# --- ANALİZ MODÜLÜ ---
+def add_indicators(df):
+    # RSI
+    df['RSI'] = ta.rsi(df['close'], length=14)
+    # Bollinger Bands
+    bbands = ta.bbands(df['close'], length=20, std=2)
+    df['BBL'] = bbands['BBL_20_2.0']
+    df['BBM'] = bbands['BBM_20_2.0']
+    df['BBU'] = bbands['BBU_20_2.0']
+    # EMA
+    df['EMA_20'] = ta.ema(df['close'], length=20)
+    df['EMA_50'] = ta.ema(df['close'], length=50)
+    return df
 
-if "selected_coins" not in st.session_state:
-    st.session_state.selected_coins = []
+# --- ANA DÖNGÜ ---
+df = fetch_data(symbol, timeframe, period)
 
-# =====================================
-# SIDEBAR – TRADING CONFIGURATION
-# =====================================
+if df is not None:
+    df = add_indicators(df)
+    last_row = df.iloc[-1]
 
-st.sidebar.header("📊 Trade Configuration")
+    # --- METRİKLER (Üst Panel) ---
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Son Fiyat", f"${last_row['close']:.2f}")
+    col2.metric("RSI (14)", f"{last_row['RSI']:.2f}")
+    col3.metric("Üst Bant", f"${last_row['BBU']:.2f}")
+    col4.metric("Alt Bant", f"${last_row['BBL']:.2f}")
 
-scalp_mode = st.sidebar.radio(
-    "Scalp Mode",
-    [
-        "5 Minutes (High Frequency)",
-        "15 Minutes (Balanced)",
-        "1 Hour (Micro Swing)"
-    ]
-)
+    # --- GRAFİK TASARIMI (Plotly) ---
+    fig = go.Figure()
 
-if "5" in scalp_mode:
-    timeframe = "5m"
-elif "15" in scalp_mode:
-    timeframe = "15m"
-else:
-    timeframe = "1h"
+    # Candlestick
+    fig.add_trace(go.Candlestick(
+        x=df['timestamp'], open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'], name='Fiyat'
+    ))
 
-# =====================================
-# INVESTMENT SETUP
-# =====================================
+    # Bollinger Bantları (Görselleştirme)
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BBU'], line=dict(color='rgba(173, 216, 230, 0.5)'), name='Üst Bant'))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['BBL'], line=dict(color='rgba(173, 216, 230, 0.5)'), fill='tonexty', name='Alt Bant'))
+    
+    # EMA
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA_20'], line=dict(color='orange', width=1), name='EMA 20'))
 
-st.sidebar.header("💰 Investment Setup")
+    fig.update_layout(title=f"{symbol} Teknik Görünüm", xaxis_rangeslider_visible=False, height=600)
+    st.plotly_chart(fig, use_container_width=True)
 
-colA, colB = st.sidebar.columns(2)
-
-with colA:
-    investment_amount = st.number_input(
-        "Investment Amount",
-        min_value=10.0,
-        value=500.0,
-        step=10.0
-    )
-
-with colB:
-    stablecoin_type = st.selectbox(
-        "Base",
-        ["USDT", "USDC"]
-    )
-
-# =====================================
-# RISK PROFILE
-# =====================================
-
-st.sidebar.header("⚠ Risk Profile")
-
-risk_level = st.sidebar.select_slider(
-    "Risk Level",
-    options=["Low", "Medium", "High"],
-    value="Medium"
-)
-
-if risk_level == "Low":
-    risk_percent = 0.5
-    leverage_default = 3
-elif risk_level == "Medium":
-    risk_percent = 1.0
-    leverage_default = 5
-else:
-    risk_percent = 2.0
-    leverage_default = 8
-
-leverage = st.sidebar.slider(
-    "Leverage",
-    min_value=1,
-    max_value=20,
-    value=leverage_default
-)
-
-auto_leverage = st.sidebar.checkbox("Auto Leverage (ATR Based)")
-
-# =====================================
-# SCAN SETTINGS
-# =====================================
-
-st.sidebar.header("🔎 Scan Settings")
-
-coin_count = st.sidebar.slider(
-    "Number of Coins to Select",
-    min_value=1,
-    max_value=50,
-    value=20
-)
-
-min_volume = st.sidebar.number_input(
-    f"Minimum 24h Volume ({stablecoin_type})",
-    min_value=10000.0,
-    value=500000.0,
-    step=50000.0
-)
-
-volume_spike_multiplier = st.sidebar.slider(
-    "Volume Spike Multiplier",
-    min_value=1.0,
-    max_value=3.0,
-    value=1.8
-)
-
-direction_mode = st.sidebar.multiselect(
-    "Allowed Directions",
-    ["Long", "Short"],
-    default=["Long", "Short"]
-)
-
-# =====================================
-# MAIN DASHBOARD
-# =====================================
-
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    st.subheader("📈 Scan Results")
-
-    if st.session_state.selected_coins:
-        st.dataframe(st.session_state.selected_coins)
+    # --- SİNYAL DURUMU ---
+    st.subheader("🤖 Strateji Durum Raporu")
+    
+    # Analiz Mantığı
+    status = "Nötr"
+    color = "white"
+    
+    if last_row['RSI'] < 30 and last_row['close'] <= last_row['BBL']:
+        status = "GÜÇLÜ AL (Aşırı Satım + Bollinger Alt Bant)"
+        color = "green"
+    elif last_row['RSI'] > 70 and last_row['close'] >= last_row['BBU']:
+        status = "GÜÇLÜ SAT (Aşırı Alım + Bollinger Üst Bant)"
+        color = "red"
+    elif last_row['close'] > last_row['EMA_20']:
+        status = "Yükseliş Trendi (EMA Üstü)"
+        color = "blue"
     else:
-        st.info(f"Scanning {timeframe} timeframe futures markets...")
+        status = "Beklemede - Net Sinyal Yok"
 
-with col2:
-    st.subheader("📌 Trade Setup Preview")
+    st.markdown(f"### Durum: :{color}[{status}]")
 
-    st.metric("Investment", f"{investment_amount} {stablecoin_type}")
-    st.metric("Risk %", f"{risk_percent}%")
-    st.metric("Leverage", f"{leverage}x")
-    st.metric("Timeframe", timeframe)
+    # Veri Tablosu
+    with st.expander("Ham Verileri Gör"):
+        st.dataframe(df.tail(20))
 
-# =====================================
-# ACTION BUTTONS
-# =====================================
-
-st.divider()
-
-colA, colB, colC = st.columns(3)
-
-with colA:
-    scan_button = st.button("🔎 Run Scan")
-
-with colB:
-    paper_trade_button = st.button("📝 Paper Trade")
-
-with colC:
-    live_trade_button = st.button("⚡ Execute Live Trade")
-
-# =====================================
-# SCAN LOGIC (MOCK FOR NOW)
-# =====================================
-
-if scan_button:
-
-    st.info("Scanning Binance Futures markets...")
-
-    # Geçici mock liste (gerçek API entegrasyonu sonraki aşama)
-    mock_market = [
-        "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
-        "AVAXUSDT", "DOGEUSDT", "BNBUSDT", "ADAUSDT",
-        "LINKUSDT", "LTCUSDT", "APTUSDT", "ARBUSDT",
-        "OPUSDT", "MATICUSDT", "INJUSDT", "NEARUSDT",
-        "FILUSDT", "ATOMUSDT", "SUIUSDT", "TIAUSDT",
-        "TRXUSDT", "ETCUSDT", "AAVEUSDT", "UNIUSDT",
-        "ICPUSDT", "HBARUSDT", "FTMUSDT", "EGLDUSDT"
-    ]
-
-    selected = mock_market[:coin_count]
-
-    st.session_state.selected_coins = selected
-
-    st.success(f"{len(selected)} coins selected.")
-
-# =====================================
-# STATUS PANEL
-# =====================================
-
-st.divider()
-
-st.subheader("📡 System Status")
-
-if st.session_state.selected_coins:
-    st.success("Scan completed successfully.")
 else:
-    st.success("System Ready")
+    st.warning("Veri yüklenemiyor, lütfen ayarları kontrol edin.")
